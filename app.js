@@ -182,7 +182,7 @@
     const defs=nodes.filter(n=>n.localName==='defs').length;
     const paths=nodes.filter(n=>n.localName==='path');
     const emptyPaths=paths.filter(n=>!(n.getAttribute('d')||'').trim()).length;
-    const malformedPaths=paths.filter(n=>{const d=(n.getAttribute('d')||'').trim();return d && !/^[Mm][\\s,0-9.+-]/.test(d);}).length;
+    const malformedPaths=paths.filter(n=>{const d=(n.getAttribute('d')||'').trim();return d && !/^[Mm][\s,0-9.+-]/.test(d);}).length;
     const ids=nodes.map(n=>n.id).filter(Boolean);
     const idSet=new Set(ids);
     const duplicateIds=ids.length-idSet.size;
