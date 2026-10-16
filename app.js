@@ -490,7 +490,14 @@
       const display=(el.getAttribute('display')||'').trim().toLowerCase();
       const opacity=(el.getAttribute('opacity')||'').trim();
       const hidden=display==='none' || /^(?:0+(?:\.0*)?|\.[0]+)(?:e[+-]?\d+)?$/i.test(opacity);
-      if(hidden && !el.hasAttribute('style')) {
+      const definitionContainers=new Set(['defs','clipPath','mask','symbol','pattern','marker','filter','linearGradient','radialGradient']);
+      let withinDefinition=false;
+      for(let parent=el.parentNode;parent;parent=parent.parentNode) {
+        if(definitionContainers.has(parent.localName)){withinDefinition=true;break;}
+      }
+      // Visibility/opacity semantics inside clip and mask definitions differ
+      // from normal drawing. Keep definition descendants unchanged.
+      if(hidden && !withinDefinition && !el.hasAttribute('style')) {
         const descendants=[el];
         for(let i=0;i<descendants.length;i++) descendants.push(...descendants[i].children);
         if(!descendants.some(node=>node.hasAttribute('id')&&refs.has(node.getAttribute('id')))) {
