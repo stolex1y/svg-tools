@@ -429,6 +429,90 @@
     }
     return removed;
   }
+  // Conservative, coordinate-preserving SVG optimization. Never rewrite path
+  // commands, point lists, transforms, dimensions, viewBox or numeric precision.
+  const COORDINATE_ATTRIBUTES=new Set([
+    'd','points','viewBox','transform','gradientTransform','patternTransform',
+    'x','y','x1','y1','x2','y2','cx','cy','r','rx','ry','dx','dy',
+    'width','height','pathLength','refX','refY','fx','fy','fr',
+    'markerWidth','markerHeight','startOffset','textLength','lengthAdjust',
+    'stroke-width','stroke-dasharray','stroke-dashoffset','stroke-miterlimit',
+    'font-size','letter-spacing','word-spacing','rotate'
+  ]);
+
+  function coordinateInventory(doc) {
+    const inventory=new Map();
+    for(const el of [doc.documentElement,...all(doc)]) {
+      const coords=Array.from(el.attributes).filter(a=>COORDINATE_ATTRIBUTES.has(a.localName))
+        .map(a=>[a.name,a.value]).sort((a,b)=>a[0].localeCompare(b[0]));
+      if(!coords.length)continue;
+      const fingerprint=JSON.stringify([el.namespaceURI,el.localName,coords]);
+      inventory.set(fingerprint,(inventory.get(fingerprint)||0)+1);
+    }
+    return inventory;
+  }
+
+  function coordinatesPreserved(before,after) {
+    const original=coordinateInventory(before);
+    const resulting=coordinateInventory(after);
+    for(const [fingerprint,count] of resulting) {
+      if(count>(original.get(fingerprint)||0))return false;
+    }
+    return true;
+  }
+
+  function optimizeStructure(doc) {
+    const report={flattened:0,emptyGroups:0,emptyPaths:0,whitespace:0,emptyAttributes:0};
+    const elements=all(doc);
+    // Even CSS selectors that only reference tag names or :empty may depend on
+    // wrapper groups, sibling positions and whitespace. Avoid restructuring if
+    // there are embedded styles; external styles have already been sanitized.
+    const hasStyles=elements.some(el=>el.localName==='style');
+    if(hasStyles)return {...report,skippedCss:true};
+    const refs=referencedIds(doc);
+    const structuralParents=new Set(['svg','g']);
+    for(const el of elements.reverse()) {
+      if(!el.parentNode || el.namespaceURI!==SVG_NS)continue;
+      // Truly empty path data draws nothing. Never remove a referenced path.
+      if(el.localName==='path' && !(el.getAttribute('d')||'').trim() &&
+        (!el.hasAttribute('id') || !refs.has(el.getAttribute('id')))) {
+        el.remove();report.emptyPaths++;continue;
+      }
+      // Empty class/style attributes are not presentation rules.
+      for(const attr of ['style','class']) {
+        if(el.hasAttribute(attr) && !el.getAttribute(attr).trim()) {
+          el.removeAttribute(attr);report.emptyAttributes++;
+        }
+      }
+      // Flatten only attribute-free g wrappers directly beneath svg or g.
+      // Do not touch <defs>, <clipPath>, <mask>, <symbol>, <switch>, <text>
+      // or any grouping that carries a transform, id, class, or other meaning.
+      if(el.localName==='g' && !el.attributes.length &&
+        el.parentNode.namespaceURI===SVG_NS &&
+        structuralParents.has(el.parentNode.localName) &&
+        Array.from(el.childNodes).every(n=>n.nodeType===1 || (n.nodeType===3 && !n.textContent.trim()))) {
+        const parent=el.parentNode;
+        const hasElements=el.children.length>0;
+        while(el.firstChild)parent.insertBefore(el.firstChild,el);
+        parent.removeChild(el);
+        if(hasElements)report.flattened++;
+        else report.emptyGroups++;
+      }
+    }
+    // Whitespace nodes outside text content carry no SVG geometry, but can
+    // affect :empty CSS selectors; this step is skipped when <style> exists.
+    const whitespaceContainers=new Set(['svg','g','defs','clipPath','mask','symbol','pattern','marker']);
+    for(const el of [doc.documentElement,...all(doc)]) {
+      if(el.namespaceURI!==SVG_NS || !whitespaceContainers.has(el.localName))continue;
+      for(const child of Array.from(el.childNodes)) {
+        if(child.nodeType===3 && !child.textContent.trim()) {
+          el.removeChild(child);report.whitespace++;
+        }
+      }
+    }
+    return report;
+  }
+
   async function removeRedundantClips(doc) {
     let removed=0,retained=0;
     const nodes=all(doc).filter(el=>el.hasAttribute('clip-path'));
@@ -461,7 +545,15 @@
       const clips=await removeRedundantClips(cleaned.doc);
       const pruned=pruneDefinitions(cleaned.doc);
       const unusedIds=removeUnusedIds(cleaned.doc);
-      const comparison=await visualMatch(item.safe,cleaned.doc);
+      const optimized=optimizeStructure(cleaned.doc);
+      // Parse the actual exported text and verify that every retained numeric
+      // attribute, coordinate list and path command is byte-for-byte unchanged.
+      const exportedSvg=serialize(cleaned.doc);
+      const exportedDoc=parseSvg(exportedSvg);
+      if(!coordinatesPreserved(item.safe,exportedDoc)) {
+        throw new Error('Защита точности: обнаружено изменение координат или трансформаций. Экспорт запрещён.');
+      }
+      const comparison=await visualMatch(item.safe,exportedDoc);
       if(!comparison.same) {
         status.className='status error';
         status.textContent='Экспорт заблокирован: после очистки изменилось изображение (масштаб '+comparison.size+'×'+comparison.size+').';
@@ -469,19 +561,23 @@
         $('afterImg').removeAttribute('src');
         return;
       }
-      state.current={doc:cleaned.doc,svg:serialize(cleaned.doc),clips,pruned,unusedIds};
-      freeUrl(state.cleanedUrl);state.cleanedUrl=makeUrl(cleaned.doc);
+      state.current={doc:exportedDoc,svg:exportedSvg,clips,pruned,unusedIds,optimized};
+      freeUrl(state.cleanedUrl);state.cleanedUrl=makeUrl(exportedDoc);
       $('afterImg').src=state.cleanedUrl;
       $('downloadBtn').disabled=false;
       status.className='status '+(clips.retained?'warn':'ok');
       status.textContent=clips.retained
         ? 'Сравнение пройдено. Экспорт доступен, но '+clips.retained+' clipPath остаются: удаление изменило бы рисунок.'
-        : 'Очистка завершена. Пиксельное сравнение на 96, 256 и 512 px пройдено.';
+        : 'Очистка завершена: изображение и все сохранившиеся координаты проверены. Точность не менялась.';
       $('cleanMetrics').textContent='Исходный размер: '+formatBytes(bytes(item.raw))+
         ' → очищенный: '+formatBytes(bytes(state.current.svg))+
         '. Удалено безопасных clipPath: '+clips.removed+', неиспользуемых узлов defs: '+pruned+
         '. Удалено неиспользуемых id: '+unusedIds.removed+', сохранено нужных id: '+unusedIds.retained+
-        '. Удалено служебных/опасных узлов: '+cleaned.changes.nodes+
+        '. Упрощено групп: '+optimized.flattened+', удалено пустых групп: '+optimized.emptyGroups+
+        ', пустых path: '+optimized.emptyPaths+', пробельных узлов: '+optimized.whitespace+
+        ', пустых атрибутов: '+optimized.emptyAttributes+'.'+
+        (optimized.skippedCss?' Оптимизация структуры пропущена из-за CSS.':'')+
+        ' Удалено служебных/опасных узлов: '+cleaned.changes.nodes+
         '. Проверка выполняется относительно безопасного предпросмотра, не исполняющего внешнее содержимое.';
     }catch(e){
       status.className='status error';status.textContent='Очистку не удалось проверить: '+e.message;
