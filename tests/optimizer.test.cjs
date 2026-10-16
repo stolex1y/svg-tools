@@ -123,6 +123,18 @@ test('retains explicitly hidden referenced geometry',()=>{
   assert.ok(all(D(root)).some(n=>n.id==='hiddenPath'));
 });
 
+test('preserves hidden descendants of clip paths and mask definitions',()=>{
+  const root=E('svg',{},
+    E('defs',{},
+      E('clipPath',{id:'clip'},E('path',{d:'M0 0L10 10',opacity:'0'})),
+      E('mask',{id:'mask'},E('path',{d:'M1 1L9 9',display:'none'}))),
+    E('path',{d:'M0 0L24 24','clip-path':'url(#clip)',mask:'url(#mask)'}));
+  const result=api.optimizeStructure(D(root));
+  assert.equal(result.hidden,0);
+  assert.ok(all(D(root)).some(n=>n.localName==='clipPath'));
+  assert.ok(all(D(root)).some(n=>n.localName==='mask'));
+});
+
 test('does not restructure when embedded CSS selectors may depend on hierarchy',()=>{
   const root=E('svg',{},T('\n'),E('style',{},T('svg > g path{fill:blue}')),
     E('g',{},E('path',{d:'M0 0L2 2'})),E('path',{d:''}));
