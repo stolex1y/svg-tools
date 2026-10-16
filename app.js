@@ -462,7 +462,7 @@
   }
 
   function optimizeStructure(doc) {
-    const report={flattened:0,emptyGroups:0,emptyPaths:0,whitespace:0,emptyAttributes:0};
+    const report={flattened:0,emptyGroups:0,emptyPaths:0,hidden:0,whitespace:0,emptyAttributes:0};
     const elements=all(doc);
     // Even CSS selectors that only reference tag names or :empty may depend on
     // wrapper groups, sibling positions and whitespace. Avoid restructuring if
@@ -482,6 +482,19 @@
       for(const attr of ['style','class']) {
         if(el.hasAttribute(attr) && !el.getAttribute(attr).trim()) {
           el.removeAttribute(attr);report.emptyAttributes++;
+        }
+      }
+      // Drop explicitly invisible subtrees only when none of their IDs is
+      // referenced elsewhere. Inline styles may override presentation attrs,
+      // so retain any element that has a non-empty style attribute.
+      const display=(el.getAttribute('display')||'').trim().toLowerCase();
+      const opacity=(el.getAttribute('opacity')||'').trim();
+      const hidden=display==='none' || /^(?:0+(?:\.0*)?|\.[0]+)(?:e[+-]?\d+)?$/i.test(opacity);
+      if(hidden && !el.hasAttribute('style')) {
+        const descendants=[el];
+        for(let i=0;i<descendants.length;i++) descendants.push(...descendants[i].children);
+        if(!descendants.some(node=>node.hasAttribute('id')&&refs.has(node.getAttribute('id')))) {
+          el.remove();report.hidden++;continue;
         }
       }
       // Flatten only attribute-free g wrappers directly beneath svg or g.
@@ -574,7 +587,8 @@
         '. Удалено безопасных clipPath: '+clips.removed+', неиспользуемых узлов defs: '+pruned+
         '. Удалено неиспользуемых id: '+unusedIds.removed+', сохранено нужных id: '+unusedIds.retained+
         '. Упрощено групп: '+optimized.flattened+', удалено пустых групп: '+optimized.emptyGroups+
-        ', пустых path: '+optimized.emptyPaths+', пробельных узлов: '+optimized.whitespace+
+        ', пустых path: '+optimized.emptyPaths+', явно скрытых элементов: '+optimized.hidden+
+        ', пробельных узлов: '+optimized.whitespace+
         ', пустых атрибутов: '+optimized.emptyAttributes+'.'+
         (optimized.skippedCss?' Оптимизация структуры пропущена из-за CSS.':'')+
         ' Удалено служебных/опасных узлов: '+cleaned.changes.nodes+
