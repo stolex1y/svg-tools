@@ -102,6 +102,27 @@ test('retains referenced empty paths',()=>{
   assert.ok(all(D(root)).some(n=>n.id==='path1'));
 });
 
+test('removes only explicitly invisible and unreferenced elements',()=>{
+  const root=E('svg',{},
+    E('path',{d:'M1 1L2 2',display:'none'}),
+    E('g',{opacity:'0.000'},E('path',{d:'M2 2L3 3'})),
+    E('path',{d:'M4 4L5 5',opacity:'0',style:'opacity:1'}),
+    E('path',{d:'M6 6L7 7'}));
+  const result=api.optimizeStructure(D(root));
+  assert.equal(result.hidden,2);
+  assert.equal(root.children.length,2);
+  assert.equal(root.children[0].getAttribute('style'),'opacity:1');
+});
+
+test('retains explicitly hidden referenced geometry',()=>{
+  const root=E('svg',{},
+    E('defs',{},E('path',{id:'hiddenPath',display:'none',d:'M1 1L5 5'})),
+    E('use',{href:'#hiddenPath'}));
+  const result=api.optimizeStructure(D(root));
+  assert.equal(result.hidden,0);
+  assert.ok(all(D(root)).some(n=>n.id==='hiddenPath'));
+});
+
 test('does not restructure when embedded CSS selectors may depend on hierarchy',()=>{
   const root=E('svg',{},T('\n'),E('style',{},T('svg > g path{fill:blue}')),
     E('g',{},E('path',{d:'M0 0L2 2'})),E('path',{d:''}));
