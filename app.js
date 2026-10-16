@@ -52,6 +52,12 @@
       const tag = el.localName;
       if (!el.parentNode) continue;
       const fullName = el.nodeName.toLowerCase();
+      if (tag === 'a') {
+        // Links are interactive, but their children may be essential visible paths.
+        const parent=el.parentNode;
+        while (el.firstChild) parent.insertBefore(el.firstChild,el);
+        el.remove();changes.nodes++;changes.external++;continue;
+      }
       if (NO_ELEMENTS.has(tag) || META_ELEMENTS.has(tag) || /^(?:sodipodi|inkscape):/.test(fullName)) {
         if (META_ELEMENTS.has(tag) || /^(?:sodipodi|inkscape):/.test(fullName)) changes.metadata++;
         else changes.external++;
@@ -174,6 +180,21 @@
     const clipCount=nodes.filter(n=>n.localName==='clipPath').length;
     const activeClips=nodes.filter(n=>n.hasAttribute('clip-path') || /clip-path\s*:/.test(n.getAttribute('style')||'')).length;
     const defs=nodes.filter(n=>n.localName==='defs').length;
+    const paths=nodes.filter(n=>n.localName==='path');
+    const emptyPaths=paths.filter(n=>!(n.getAttribute('d')||'').trim()).length;
+    const malformedPaths=paths.filter(n=>{const d=(n.getAttribute('d')||'').trim();return d && !/^[Mm][\\s,0-9.+-]/.test(d);}).length;
+    const ids=nodes.map(n=>n.id).filter(Boolean);
+    const idSet=new Set(ids);
+    const duplicateIds=ids.length-idSet.size;
+    const references=new Set();
+    for(const node of nodes){
+      if(node.localName==='style')for(const id of getRefIds(node.textContent||''))references.add(id);
+      for(const a of Array.from(node.attributes)){
+        for(const id of getRefIds(a.value))references.add(id);
+        if(/^(?:href|xlink:href)$/.test(a.name) && a.value.startsWith('#'))references.add(a.value.slice(1));
+      }
+    }
+    const missingRefs=Array.from(references).filter(id=>!idSet.has(id));
     const strokes=nodes.filter(n=>n.hasAttribute('stroke') && n.getAttribute('stroke')!=='none').length;
     const effects=nodes.filter(n=>['mask','filter','pattern','text','tspan','style','use'].includes(n.localName)).length;
     const metadata=nodes.filter(n=>META_ELEMENTS.has(n.localName)||/^(?:sodipodi|inkscape):/.test(n.nodeName.toLowerCase())).length;
@@ -185,6 +206,10 @@
     const goodVB=vb.length===4 && vb.every(Number.isFinite)&&vb[2]>0&&vb[3]>0;
     notes.push(goodVB?check('ok','viewBox корректен',vb.join(' × ')):
       check('warn','viewBox отсутствует или некорректен','Рекомендуется явная область отображения из четырёх чисел с положительной шириной и высотой.'));
+    if (emptyPaths) notes.push(check('warn','Пустые path: '+emptyPaths,'Обнаружены пути без атрибута d: удалите их в векторном редакторе.'));
+    if (malformedPaths) notes.push(check('warn','Подозрительные path: '+malformedPaths,'Команды пути обычно должны начинаться с M или m. Проверьте геометрию.'));
+    if (duplicateIds) notes.push(check('warn','Повторяющиеся id: '+duplicateIds,'Дублирующиеся идентификаторы могут ломать градиенты, маски и clipPath.'));
+    if (missingRefs.length) notes.push(check('warn','Отсутствующие ссылки: '+missingRefs.length,'Не найдены определения для: '+missingRefs.slice(0,6).join(', ')+'.'));
     if (shapeCount===0) notes.push(check('error','Не обнаружены видимые геометрические элементы','Иконка может быть пустой или полностью содержаться в defs.'));
     else notes.push(check('ok','Геометрия найдена','Видимых геометрических узлов: '+shapeCount+'.'));
     if (clipCount || activeClips) notes.push(check('warn','clipPath: '+clipCount+', применений: '+activeClips,
