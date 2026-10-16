@@ -195,6 +195,7 @@
       }
     }
     const missingRefs=Array.from(references).filter(id=>!idSet.has(id));
+    const unusedIds=nodes.filter(n=>n.hasAttribute('id')&&!referencedIds(doc).has(n.getAttribute('id'))).length;
     const strokes=nodes.filter(n=>n.hasAttribute('stroke') && n.getAttribute('stroke')!=='none').length;
     const effects=nodes.filter(n=>['mask','filter','pattern','text','tspan','style','use'].includes(n.localName)).length;
     const metadata=nodes.filter(n=>META_ELEMENTS.has(n.localName)||/^(?:sodipodi|inkscape):/.test(n.nodeName.toLowerCase())).length;
@@ -209,6 +210,8 @@
     if (emptyPaths) notes.push(check('warn','Пустые path: '+emptyPaths,'Обнаружены пути без атрибута d: удалите их в векторном редакторе.'));
     if (malformedPaths) notes.push(check('warn','Подозрительные path: '+malformedPaths,'Команды пути обычно должны начинаться с M или m. Проверьте геометрию.'));
     if (duplicateIds) notes.push(check('warn','Повторяющиеся id: '+duplicateIds,'Дублирующиеся идентификаторы могут ломать градиенты, маски и clipPath.'));
+    if (unusedIds) notes.push(check('warn','Неиспользуемые id: '+unusedIds,'Эти идентификаторы будут удалены при очистке, если на них не ссылаются другие элементы или стили.'));
+    else if (ids.length) notes.push(check('ok','Все id используются','Найденные идентификаторы необходимы для внутренних ссылок или CSS.'));
     if (missingRefs.length) notes.push(check('warn','Отсутствующие ссылки: '+missingRefs.length,'Не найдены определения для: '+missingRefs.slice(0,6).join(', ')+'.'));
     if (shapeCount===0) notes.push(check('error','Не обнаружены видимые геометрические элементы','Иконка может быть пустой или полностью содержаться в defs.'));
     else notes.push(check('ok','Геометрия найдена','Видимых геометрических узлов: '+shapeCount+'.'));
@@ -358,22 +361,55 @@
     }
   }
 
-  // Preserve SVG semantics by removing only definitions with no references.
+  // Track local references BEFORE deleting id attributes. Keep the original spelling
+  // of referenced IDs: renaming or deleting them can break gradients, clips and CSS.
   function referencedIds(doc) {
     const used=new Set();
-    for(const node of all(doc)) {
+    const nodes=all(doc);
+    const idrefAttributes=new Set([
+      'aria-labelledby','aria-describedby','aria-controls','aria-owns',
+      'aria-flowto','aria-details','aria-errormessage','aria-activedescendant',
+      'for','headers'
+    ]);
+    let preserveAllIds=false;
+    for(const node of nodes) {
       if (node.localName==='style') {
-        for(const id of getRefIds(node.textContent||'')) used.add(id);
         const rules=node.textContent||'';
-        for (const m of rules.matchAll(/#([A-Za-z_][\w:.-]*)/g)) used.add(m[1]);
+        for(const id of getRefIds(rules)) used.add(id);
+        // CSS ID selectors (e.g. #logo { fill: red }) depend on the id attribute.
+        // Hex colors may produce false positives; keeping an extra id is safer.
+        for(const m of rules.matchAll(/#([A-Za-z_][\w:.-]*)/g)) used.add(m[1]);
+        // Arbitrary attribute selectors ([id], [id^="foo"]) and CSS escapes
+        // cannot reliably be resolved here; retain IDs in these cases.
+        if (/\[\s*id(?=\s|[\]~|^$*=:])/i.test(rules) || /\\/.test(rules)) preserveAllIds=true;
       }
       for(const attr of Array.from(node.attributes)) {
-        for(const id of getRefIds(attr.value)) used.add(id);
-        if (/^(?:href|xlink:href)$/.test(attr.name) && attr.value.startsWith('#')) used.add(attr.value.slice(1));
-        if (/^(?:aria-labelledby|aria-describedby)$/.test(attr.name)) attr.value.split(/\s+/).forEach(v=>used.add(v));
+        const name=attr.name.toLowerCase(),value=attr.value.trim();
+        if (name==='id') continue;
+        for(const id of getRefIds(value)) used.add(id);
+        if (/^(?:href|xlink:href)$/.test(name) && value.startsWith('#')) used.add(value.slice(1));
+        if (idrefAttributes.has(name)) {
+          for(const id of value.split(/\s+/)) if(id) used.add(id);
+        }
+        // SMIL synchronization references such as "elementId.begin".
+        if (name==='begin' || name==='end') {
+          for(const m of value.matchAll(/(?:^|[;\s])([A-Za-z_][\w:.-]*)\.(?:begin|end|repeat|click|mouseover|mouseout|focusin|focusout)\b/g)) used.add(m[1]);
+        }
       }
     }
+    if (preserveAllIds) for(const el of nodes) if(el.hasAttribute('id')) used.add(el.getAttribute('id'));
     return used;
+  }
+
+  function removeUnusedIds(doc) {
+    const referenced=referencedIds(doc);
+    let removed=0,retained=0;
+    for(const element of all(doc)) {
+      if(!element.hasAttribute('id')) continue;
+      if(referenced.has(element.getAttribute('id'))) retained++;
+      else {element.removeAttribute('id');removed++;}
+    }
+    return {removed,retained};
   }
   function pruneDefinitions(doc) {
     let removed=0;
@@ -423,6 +459,7 @@
       const cleaned=sanitize(item.doc);
       const clips=await removeRedundantClips(cleaned.doc);
       const pruned=pruneDefinitions(cleaned.doc);
+      const unusedIds=removeUnusedIds(cleaned.doc);
       const comparison=await visualMatch(item.safe,cleaned.doc);
       if(!comparison.same) {
         status.className='status error';
@@ -431,7 +468,7 @@
         $('afterImg').removeAttribute('src');
         return;
       }
-      state.current={doc:cleaned.doc,svg:serialize(cleaned.doc),clips,pruned};
+      state.current={doc:cleaned.doc,svg:serialize(cleaned.doc),clips,pruned,unusedIds};
       freeUrl(state.cleanedUrl);state.cleanedUrl=makeUrl(cleaned.doc);
       $('afterImg').src=state.cleanedUrl;
       $('downloadBtn').disabled=false;
@@ -442,6 +479,7 @@
       $('cleanMetrics').textContent='Исходный размер: '+formatBytes(bytes(item.raw))+
         ' → очищенный: '+formatBytes(bytes(state.current.svg))+
         '. Удалено безопасных clipPath: '+clips.removed+', неиспользуемых узлов defs: '+pruned+
+        '. Удалено неиспользуемых id: '+unusedIds.removed+', сохранено нужных id: '+unusedIds.retained+
         '. Удалено служебных/опасных узлов: '+cleaned.changes.nodes+
         '. Проверка выполняется относительно безопасного предпросмотра, не исполняющего внешнее содержимое.';
     }catch(e){
