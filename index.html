@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>SVG Inspector — проверка и очистка иконок</title>
+  <style>
+    :root{font:15px/1.48 "Segoe UI",system-ui,sans-serif;color:#ecf2fb;background:#0d1420;--panel:#172235;--line:#354357;--muted:#b2c2d6;--blue:#91b9ff}
+    *{box-sizing:border-box}body{margin:0}button,input{font:inherit}button{cursor:pointer;border:1px solid #60799e;border-radius:10px;background:#2b466d;color:#f4f8ff;padding:10px 15px}
+    button:hover:not(:disabled){background:#3a5d90}button:disabled{cursor:not-allowed;opacity:.48}button:focus-visible,input:focus-visible{outline:3px solid #fdbb78;outline-offset:3px}
+    .primary{background:#416cbd;border-color:#83a6e5;font-weight:700}.muted{background:transparent;border-color:#54637b}
+    .container{max-width:1480px;margin:auto;padding:24px 24px 60px}
+    header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:20px}
+    h1,h2,h3,p{margin-top:0}h1{font-size:30px;letter-spacing:-.7px;margin-bottom:7px}h2{font-size:21px;margin-bottom:12px}h3{font-size:16px;margin-bottom:10px}
+    .eyebrow{font-size:12px;font-weight:750;letter-spacing:.12em;color:var(--blue);text-transform:uppercase}.sub,.hint{color:var(--muted)}
+    .hint{font-size:13px}.pill{background:#143c35;border:1px solid #387e68;padding:8px 13px;border-radius:30px;color:#a3f6d1;font-size:13px;font-weight:700}
+    .panel{background:var(--panel);border:1px solid var(--line);border-radius:17px;padding:19px;margin-top:20px}
+    .drop{border:2px dashed #5d789f;border-radius:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:23px;background:#182a42}
+    .drop.over{background:#27446a;border-color:#bdd5ff}.columns{display:grid;grid-template-columns:minmax(270px,.8fr) minmax(0,2.2fr);gap:20px}
+    .list{display:grid;gap:8px;max-height:420px;overflow:auto}.item{display:block;width:100%;text-align:left;white-space:normal;background:#101e30;border-color:#3a4b62;overflow-wrap:anywhere}
+    .item.selected{border-color:#a7caff;background:#2a4265}.item small{display:block;color:#afc1d7}.summary{font-size:13px;color:var(--muted);margin:5px 0 0}
+    .status{padding:12px 14px;border-radius:11px;background:#223147;border:1px solid #48617e;margin:10px 0;color:#dbe9fb}
+    .warn{border-color:#947743;background:#382f20;color:#ffe0a1}.error{border-color:#a6535d;background:#40232b;color:#ffd4da}.ok{border-color:#39775c;background:#193b31;color:#aef4d2}
+    .checklist{display:grid;gap:8px}.check{padding:11px 13px;background:#102033;border:1px solid #344760;border-radius:11px}
+    .check strong{display:block}.check .description{color:var(--muted);font-size:13px;margin:2px 0 0}.check[data-level="error"]{border-left:4px solid #ff8291}
+    .check[data-level="warn"]{border-left:4px solid #f5c978}.check[data-level="ok"]{border-left:4px solid #75dea9}
+    .bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+    .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.toolbar label{display:flex;align-items:center;gap:8px;color:var(--muted)}
+    input[type="color"]{width:42px;height:35px;padding:1px;border-radius:8px;background:#fff;border:1px solid #4f6587}
+    .previews{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:12px}
+    .preview{border:1px solid #596778;border-radius:13px;overflow:hidden;min-width:0}.preview .canvas{aspect-ratio:1.22;display:grid;place-items:center;overflow:hidden}
+    .preview .canvas img{display:block;width:62%;height:62%;object-fit:contain}.preview .caption{background:#111b2b;padding:7px 10px;color:#b7c9dd;font-size:12px}
+    .checker{background-color:#fff;background-image:linear-gradient(45deg,#d9dde4 25%,transparent 25%),linear-gradient(-45deg,#d9dde4 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#d9dde4 75%),linear-gradient(-45deg,transparent 75%,#d9dde4 75%);background-size:22px 22px;background-position:0 0,0 11px,11px -11px,-11px 0}
+    .comparison{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}
+    .comparison .canvas{background:#f9fafb;min-height:180px;display:grid;place-items:center;border-radius:11px;overflow:hidden}
+    .comparison img{width:65%;height:180px;object-fit:contain}.comparison figcaption{margin-top:6px;color:var(--muted);font-size:13px;text-align:center}
+    figure{margin:0}.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .metrics{margin-top:12px;font-size:13px;color:#d1e2f9}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+    footer{color:#9eb1ca;font-size:13px;margin-top:23px}.hidden{display:none!important}
+    @media(max-width:1000px){.columns{grid-template-columns:1fr}.previews{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:560px){.container{padding:14px}.panel{padding:13px}.comparison{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<main class="container">
+  <header>
+    <div><div class="eyebrow">SVG Tools</div><h1>SVG Inspector</h1><p class="sub">Проверка иконок, контрастности и безопасная очистка SVG</p></div>
+    <div class="pill">● Без интернета и установки</div>
+  </header>
+  <section class="panel" aria-labelledby="importHead">
+    <h2 id="importHead">1. Загрузите SVG</h2>
+    <div class="drop" id="dropZone"><button class="primary" id="selectFiles">Выбрать SVG-файлы</button><span>или перетащите иконки сюда</span><span class="hint">До 2 МБ на файл. Файлы обрабатываются только на вашем компьютере.</span></div>
+    <input id="fileInput" type="file" accept=".svg,image/svg+xml" multiple hidden>
+  </section>
+  <div class="columns">
+    <aside>
+      <section class="panel" aria-labelledby="filesHead">
+        <h2 id="filesHead">Иконки <span id="fileCount" class="hint"></span></h2>
+        <div class="list" id="fileList"><p class="hint">Пока нет загруженных SVG.</p></div>
+      </section>
+      <section class="panel" aria-labelledby="reportHead">
+        <h2 id="reportHead">2. Результаты проверки</h2>
+        <p class="hint">Проверяем структуру, опасное содержимое, дефекты, видимость и использование clipPath.</p>
+        <div id="reportSummary" class="status">Загрузите иконку, чтобы увидеть результаты.</div>
+        <div id="reportList" class="checklist" aria-live="polite"></div>
+      </section>
+    </aside>
+    <div>
+      <section class="panel" aria-labelledby="viewHead">
+        <div class="bar"><h2 id="viewHead">3. Проверка на разных фонах</h2><div class="toolbar"><label>Свой фон <input id="customColor" type="color" value="#4673c8" aria-label="Цвет дополнительного фона"></label></div></div>
+        <div class="previews" id="backgroundGrid" aria-label="Предпросмотр иконки на разных фонах"></div>
+        <p class="hint">Изображение отображается с масштабированием и проверяется на белом, тёмном и двух цветных фонах; прозрачность — на шахматном.</p>
+        <div id="visualMetrics" class="metrics"></div>
+      </section>
+      <section class="panel" aria-labelledby="cleanHead">
+        <h2 id="cleanHead">4. Очистка и сравнение</h2>
+        <p class="hint">Удаляются метаданные редакторов, комментарии, неиспользуемые определения и небезопасное содержимое. clipPath удаляется только при подтверждённом визуальном совпадении.</p>
+        <div class="controls"><button id="cleanBtn" disabled>Очистить и проверить</button><button id="downloadBtn" class="primary" disabled>Скачать очищенный SVG</button><button id="sourceBtn" class="muted" disabled>Скачать оригинал</button></div>
+        <div id="cleanStatus" class="status">Сначала загрузите SVG.</div>
+        <div class="comparison">
+          <figure><div class="canvas checker"><img id="beforeImg" alt="Иконка до очистки"></div><figcaption>До очистки (безопасный предпросмотр)</figcaption></figure>
+          <figure><div class="canvas checker"><img id="afterImg" alt="Иконка после очистки"></div><figcaption>После очистки</figcaption></figure>
+        </div>
+        <p id="cleanMetrics" class="metrics"></p>
+      </section>
+    </div>
+  </div>
+  <footer>SVG Inspector · Автономный HTML + JavaScript для Windows (Edge/Chrome). Проверка пикселей помогает выявить изменения, но не заменяет ручную проверку сложных SVG. Если clipPath влияет на внешний вид, экспорт без него блокируется.</footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
