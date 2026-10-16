@@ -76,7 +76,7 @@
       </section>
       <section class="panel" aria-labelledby="cleanHead">
         <h2 id="cleanHead">4. Очистка и сравнение</h2>
-        <p class="hint">Удаляются метаданные редакторов, комментарии, неиспользуемые определения и небезопасное содержимое. clipPath удаляется только при подтверждённом визуальном совпадении.</p>
+        <p class="hint">Удаляются метаданные, ненужные ID, пустые пути и группы; упрощаются только группы без атрибутов. Точность координат, значения d, points, viewBox и transform не меняются. clipPath удаляется лишь после визуальной проверки.</p>
         <div class="controls"><button id="cleanBtn" disabled>Очистить и проверить</button><button id="downloadBtn" class="primary" disabled>Скачать очищенный SVG</button><button id="sourceBtn" class="muted" disabled>Скачать оригинал</button></div>
         <div id="cleanStatus" class="status">Сначала загрузите SVG.</div>
         <div class="comparison">
