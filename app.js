@@ -195,7 +195,8 @@
       }
     }
     const missingRefs=Array.from(references).filter(id=>!idSet.has(id));
-    const unusedIds=nodes.filter(n=>n.hasAttribute('id')&&!referencedIds(doc).has(n.getAttribute('id'))).length;
+    const referenced=referencedIds(doc);
+    const unusedIds=nodes.filter(n=>n.hasAttribute('id')&&!referenced.has(n.getAttribute('id'))).length;
     const strokes=nodes.filter(n=>n.hasAttribute('stroke') && n.getAttribute('stroke')!=='none').length;
     const effects=nodes.filter(n=>['mask','filter','pattern','text','tspan','style','use'].includes(n.localName)).length;
     const metadata=nodes.filter(n=>META_ELEMENTS.has(n.localName)||/^(?:sodipodi|inkscape):/.test(n.nodeName.toLowerCase())).length;
