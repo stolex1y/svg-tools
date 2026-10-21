@@ -27,7 +27,6 @@
   const xmlError = doc => doc.getElementsByTagName('parsererror').length > 0;
 
   function parseSvg(raw) {
-    if (/<!DOCTYPE\b|<!ENTITY\b/i.test(raw)) throw new Error('DOCTYPE и XML entities запрещены: они небезопасны для локальной обработки.');
     const doc = new DOMParser().parseFromString(raw,'image/svg+xml');
     if (xmlError(doc)) throw new Error('Ошибка XML: файл повреждён или содержит некорректные теги.');
     if (!doc.documentElement || doc.documentElement.localName !== 'svg') throw new Error('Корневой элемент должен быть <svg>.');
@@ -84,11 +83,11 @@
     }
     const root = doc.documentElement;
     root.setAttribute('xmlns',SVG_NS);
-    // Remove comments and processing instructions (not visual content).
+    // Remove comments, processing instructions and DTD declarations (not visual content).
     const nodes = [doc, ...all(doc)];
     for (const parent of nodes) {
       for (const node of Array.from(parent.childNodes)) {
-        if (node.nodeType === 8 || node.nodeType === 7) { parent.removeChild(node); changes.nodes++; changes.metadata++; }
+        if (node.nodeType === 8 || node.nodeType === 7 || node.nodeType === 10) { parent.removeChild(node); changes.nodes++; changes.metadata++; }
       }
     }
     return {doc,changes};
