@@ -18,13 +18,15 @@ class FakeNode {
     this.parentNode=null;
     this.childNodes=[];
   }
-  get attributes(){return Object.entries(this._attrs).map(([name,value])=>({name,localName:name,value}));}
+  get attributes(){return Object.entries(this._attrs).map(([name,value])=>({name,localName:name.split(':').at(-1),value,
+    namespaceURI:name.startsWith('xlink:')?'http://www.w3.org/1999/xlink':null}));}
   get id(){return this.getAttribute('id')||'';}
   get children(){return this.childNodes.filter(n=>n.nodeType===1);}
   get firstChild(){return this.childNodes[0]||null;}
   get textContent(){return this.nodeType===3?this._text:this.childNodes.map(x=>x.textContent).join('');}
   hasAttribute(key){return Object.prototype.hasOwnProperty.call(this._attrs,key);}
   getAttribute(key){return this._attrs[key]??null;}
+  setAttribute(key,value){this._attrs[key]=value;}
   removeAttribute(key){delete this._attrs[key];}
   append(...nodes){
     for(const node of nodes){if(node.parentNode)node.parentNode.removeChild(node);node.parentNode=this;this.childNodes.push(node);}
@@ -63,7 +65,7 @@ const begin=source.indexOf('  function referencedIds(doc) {');
 const end=source.indexOf('  async function removeRedundantClips(doc) {',begin);
 assert.ok(begin>=0 && end>begin,'Production optimization helpers must be present');
 const api=vm.runInNewContext(
-  source.slice(begin,end)+'\n({referencedIds,removeUnusedIds,pruneDefinitions,coordinateInventory,coordinatesPreserved,optimizeStructure});',
+  source.slice(begin,end)+'\n({referencedIds,removeUnusedIds,pruneDefinitions,coordinateInventory,coordinatesPreserved,optimizeStructure,normalizeAttributes});',
   {SVG_NS,all,getRefIds}
 );
 
@@ -182,4 +184,189 @@ test('unused geometry may be deleted, without rewriting surviving coordinates',(
   const before=D(E('svg',{viewBox:'0 0 24 24'},E('path',{d:'M1.234567890123456 1Z'})));
   const after=D(E('svg',{viewBox:'0 0 24 24'}));
   assert.equal(api.coordinatesPreserved(before,after),true);
+});
+
+test('migrates legacy links, keeps SVG 2 precedence and removes unused namespace declarations',()=>{
+  const root=E('svg',{'xmlns:xlink':'http://www.w3.org/1999/xlink'},
+    E('use',{'xlink:href':'#legacy'}),
+    E('use',{'xlink:href':'#legacy',href:'#modern'}));
+  api.normalizeAttributes(D(root));
+  assert.equal(root.children[0].getAttribute('href'),'#legacy');
+  assert.equal(root.children[1].getAttribute('href'),'#modern');
+  assert.equal(root.children[0].hasAttribute('xlink:href'),false);
+  assert.equal(root.children[1].hasAttribute('xlink:href'),false);
+  assert.equal(root.hasAttribute('xmlns:xlink'),false);
+});
+
+test('retains namespace declarations still used by other attributes',()=>{
+  const root=E('svg',{'xmlns:xlink':'http://www.w3.org/1999/xlink'},
+    E('rect',{'xlink:title':'label',width:'2',height:'2'}));
+  api.normalizeAttributes(D(root));
+  assert.equal(root.getAttribute('xmlns:xlink'),'http://www.w3.org/1999/xlink');
+});
+
+test('omits only zero positions with equivalent defaults, preserving coordinate guard',()=>{
+  const make=()=>E('svg',{x:'0',y:'0px'},
+    E('rect',{x:'-0.0',y:'0%',width:'12.123456789',height:'8'}),
+    E('use',{x:'0e3',y:'0',href:'#shape'}),
+    E('pattern',{x:'0',y:'0'}),
+    E('rect',{x:'1',y:'0.000000001'}),
+    E('mask',{x:'0',y:'0'}),
+    E('filter',{x:'0',y:'0'}),
+    E('text',{x:'0',y:'0'},E('tspan',{x:'0',y:'0'})));
+  const before=D(make()),after=D(make());
+  api.normalizeAttributes(after);
+  assert.equal(after.documentElement.hasAttribute('x'),false);
+  assert.equal(after.documentElement.hasAttribute('y'),false);
+  for(const el of after.documentElement.children.slice(0,3)) {
+    assert.equal(el.hasAttribute('x'),false);
+    assert.equal(el.hasAttribute('y'),false);
+  }
+  assert.equal(after.documentElement.children[0].getAttribute('width'),'12.123456789');
+  assert.equal(after.documentElement.children[3].getAttribute('x'),'1');
+  assert.equal(after.documentElement.children[3].getAttribute('y'),'0.000000001');
+  for(const el of after.documentElement.children.slice(4)) {
+    assert.equal(el.getAttribute('x'),'0');
+    assert.equal(el.getAttribute('y'),'0');
+  }
+  assert.equal(after.documentElement.children[6].children[0].getAttribute('x'),'0');
+  assert.equal(api.coordinatesPreserved(before,after),true);
+  after.documentElement.children[0].setAttribute('x','1');
+  assert.equal(api.coordinatesPreserved(before,after),false);
+});
+
+test('retains legacy links and explicit zero positions when CSS may select their attributes',()=>{
+  const root=E('svg',{'xmlns:xlink':'http://www.w3.org/1999/xlink'},
+    E('style',{},T('[x] { fill: red }')),
+    E('use',{'xlink:href':'#shape',x:'0',y:'0'}));
+  api.normalizeAttributes(D(root));
+  assert.equal(root.children[1].getAttribute('x'),'0');
+  assert.equal(root.children[1].getAttribute('y'),'0');
+  assert.equal(root.children[1].getAttribute('xlink:href'),'#shape');
+  assert.equal(root.children[1].hasAttribute('href'),false);
+  assert.equal(root.hasAttribute('xmlns:xlink'),true);
+});
+test('removes fill and clip rules only when their effective inherited value matches',()=>{
+  const root=E('svg',{'fill-rule':'nonzero','clip-rule':'nonzero'},
+    E('g',{'fill-rule':'nonzero','clip-rule':'nonzero'}),
+    E('g',{'fill-rule':'evenodd','clip-rule':'evenodd'},
+      E('path',{'fill-rule':'evenodd','clip-rule':'evenodd'}),
+      E('path',{'fill-rule':'nonzero','clip-rule':'nonzero'})),
+    E('path',{'fill-rule':'evenodd','clip-rule':'evenodd'}));
+  const report=api.normalizeAttributes(D(root));
+  assert.equal(root.hasAttribute('fill-rule'),false);
+  assert.equal(root.hasAttribute('clip-rule'),false);
+  assert.equal(root.children[0].hasAttribute('fill-rule'),false);
+  assert.equal(root.children[0].hasAttribute('clip-rule'),false);
+  assert.equal(root.children[1].getAttribute('fill-rule'),'evenodd');
+  assert.equal(root.children[1].getAttribute('clip-rule'),'evenodd');
+  assert.equal(root.children[1].children[0].hasAttribute('fill-rule'),false);
+  assert.equal(root.children[1].children[0].hasAttribute('clip-rule'),false);
+  assert.equal(root.children[1].children[1].getAttribute('fill-rule'),'nonzero');
+  assert.equal(root.children[1].children[1].getAttribute('clip-rule'),'nonzero');
+  assert.equal(root.children[2].getAttribute('fill-rule'),'evenodd');
+  assert.equal(root.children[2].getAttribute('clip-rule'),'evenodd');
+  assert.equal(report.rules,6);
+});
+
+test('retains inherited rules and paints with inline-style or referenced ambiguity',()=>{
+  const styled=E('svg',{},
+    E('g',{style:'fill: blue'},E('path',{'fill-rule':'nonzero',fill:'black'})),
+    E('path',{style:'fill: red','fill-rule':'nonzero',fill:'black'}));
+  api.normalizeAttributes(D(styled));
+  assert.equal(styled.children[0].children[0].getAttribute('fill-rule'),'nonzero');
+  assert.equal(styled.children[0].children[0].getAttribute('fill'),'black');
+  assert.equal(styled.children[1].getAttribute('fill-rule'),'nonzero');
+  assert.equal(styled.children[1].getAttribute('fill'),'black');
+
+  const referenced=E('svg',{},
+    E('defs',{},
+      E('g',{id:'shape','fill-rule':'nonzero',fill:'red'},
+        E('path',{'fill-rule':'nonzero',fill:'red'})),
+      E('path',{id:'direct','clip-rule':'nonzero'})),
+    E('use',{href:'#shape'}),
+    E('use',{href:'#direct'}),
+    E('path',{'fill-rule':'nonzero',fill:'black'}));
+  api.normalizeAttributes(D(referenced));
+  assert.equal(referenced.children[0].children[0].getAttribute('fill-rule'),'nonzero');
+  assert.equal(referenced.children[0].children[0].getAttribute('fill'),'red');
+  assert.equal(referenced.children[0].children[0].children[0].getAttribute('fill-rule'),'nonzero');
+  assert.equal(referenced.children[0].children[0].children[0].getAttribute('fill'),'red');
+  assert.equal(referenced.children[0].children[1].getAttribute('clip-rule'),'nonzero');
+  assert.equal(referenced.children[3].hasAttribute('fill-rule'),false);
+  assert.equal(referenced.children[3].hasAttribute('fill'),false);
+});
+
+test('cleans known inherited presentation defaults without erasing overrides',()=>{
+  const root=E('svg',{fill:'red','stroke-linecap':'round','fill-opacity':'0.5',opacity:'0.5'},
+    E('g',{fill:'red','stroke-linecap':'round','fill-opacity':'1',opacity:'1'},
+      E('path',{fill:'blue','stroke-linecap':'butt','fill-opacity':'1',opacity:'1'})));
+  const report=api.normalizeAttributes(D(root));
+  assert.equal(root.getAttribute('fill'),'red');
+  assert.equal(root.getAttribute('stroke-linecap'),'round');
+  assert.equal(root.getAttribute('fill-opacity'),'0.5');
+  assert.equal(root.getAttribute('opacity'),'0.5');
+  assert.equal(root.children[0].hasAttribute('fill'),false);
+  assert.equal(root.children[0].hasAttribute('stroke-linecap'),false);
+  assert.equal(root.children[0].getAttribute('fill-opacity'),'1');
+  assert.equal(root.children[0].hasAttribute('opacity'),false);
+  assert.equal(root.children[0].children[0].getAttribute('fill'),'blue');
+  assert.equal(root.children[0].children[0].getAttribute('stroke-linecap'),'butt');
+  assert.equal(root.children[0].children[0].hasAttribute('fill-opacity'),false);
+  assert.equal(root.children[0].children[0].hasAttribute('opacity'),false);
+  assert.equal(report.presentation,5);
+});
+
+test('preserves unknown inherited values and removes only literal noninherited defaults',()=>{
+  const unknown=E('svg',{'fill-rule':'revert',fill:'var(--paint)'},
+    E('path',{'fill-rule':'nonzero',fill:'red'}));
+  api.normalizeAttributes(D(unknown));
+  assert.equal(unknown.getAttribute('fill-rule'),'revert');
+  assert.equal(unknown.getAttribute('fill'),'var(--paint)');
+  assert.equal(unknown.children[0].getAttribute('fill-rule'),'nonzero');
+  assert.equal(unknown.children[0].getAttribute('fill'),'red');
+  const cssWide=E('svg',{'fill-rule':'inherit','clip-rule':'unset',fill:'initial',stroke:'revert-layer'},
+    E('path',{'fill-rule':'nonzero','clip-rule':'nonzero',fill:'black',stroke:'none'}));
+  api.normalizeAttributes(D(cssWide));
+  assert.equal(cssWide.getAttribute('fill-rule'),'inherit');
+  assert.equal(cssWide.getAttribute('clip-rule'),'unset');
+  assert.equal(cssWide.getAttribute('fill'),'initial');
+  assert.equal(cssWide.getAttribute('stroke'),'revert-layer');
+  assert.equal(cssWide.children[0].getAttribute('fill-rule'),'nonzero');
+  assert.equal(cssWide.children[0].getAttribute('clip-rule'),'nonzero');
+  assert.equal(cssWide.children[0].getAttribute('fill'),'black');
+  assert.equal(cssWide.children[0].getAttribute('stroke'),'none');
+
+  const root=E('svg',{opacity:'0.5','vector-effect':'non-scaling-stroke'},
+    E('path',{opacity:'1','vector-effect':'none'}),
+    E('linearGradient',{},E('stop',{'stop-color':'black','stop-opacity':'1'})),
+    E('linearGradient',{},E('stop',{style:'stop-color: red','stop-color':'black','stop-opacity':'1'})),
+    E('rect',{'stop-color':'black','stop-opacity':'1'}));
+  api.normalizeAttributes(D(root));
+  assert.equal(root.children[0].hasAttribute('opacity'),false);
+  assert.equal(root.children[0].hasAttribute('vector-effect'),false);
+  assert.equal(root.children[1].children[0].hasAttribute('stop-color'),false);
+  assert.equal(root.children[1].children[0].hasAttribute('stop-opacity'),false);
+  assert.equal(root.children[2].children[0].getAttribute('stop-color'),'black');
+  assert.equal(root.children[2].children[0].getAttribute('stop-opacity'),'1');
+  assert.equal(root.children[3].getAttribute('stop-color'),'black');
+  assert.equal(root.children[3].getAttribute('stop-opacity'),'1');
+});
+
+test('retains zero pattern coordinates when href supplies a referenced pattern',()=>{
+  const root=E('svg',{},E('defs',{},
+    E('pattern',{id:'base',x:'5',y:'6'}),
+    E('pattern',{href:'#base',x:'0',y:'0'})));
+  api.normalizeAttributes(D(root));
+  assert.equal(root.children[0].children[0].getAttribute('x'),'5');
+  assert.equal(root.children[0].children[1].getAttribute('x'),'0');
+  assert.equal(root.children[0].children[1].getAttribute('y'),'0');
+});
+
+test('preserves explicit root color but removes an identical inherited color',()=>{
+  const root=E('svg',{color:'black'},E('path',{color:'black',fill:'currentColor'}));
+  api.normalizeAttributes(D(root));
+  assert.equal(root.getAttribute('color'),'black');
+  assert.equal(root.children[0].hasAttribute('color'),false);
+  assert.equal(root.children[0].getAttribute('fill'),'currentColor');
 });

@@ -299,7 +299,7 @@
       tile.append(canvas,caption);container.append(tile);
     });
     const s=item&&item.stats;
-    $('visualMetrics').textContent=s?(s.count?'Заполнение холста: '+(s.coverage*100).toFixed(1)+'%. Превью построено из SVG после предварительного удаления небезопасного содержимого.':'Пустой рисунок.'):'Ожидается SVG для предпросмотра.';
+    $('visualMetrics').textContent=s?(s.count?'Заполнение холста: '+(s.coverage*100).toFixed(1)+'%.':'Пустой рисунок.'):'';
   }
 
   function renderList() {
@@ -318,7 +318,7 @@
 
   function resetClean(){
     state.current=null;freeUrl(state.cleanedUrl);state.cleanedUrl=null;
-    $('cleanBtn').disabled=true;$('downloadBtn').disabled=true;$('sourceBtn').disabled=true;
+    $('cleanBtn').disabled=true;$('downloadBtn').disabled=true;
     $('cleanStatus').className='status';$('cleanStatus').textContent='Выберите корректный SVG.';
     $('cleanMetrics').textContent='';
     $('beforeImg').removeAttribute('src');$('afterImg').removeAttribute('src');
@@ -330,11 +330,10 @@
     if (!item)return;
     if(item.error){$('cleanStatus').className='status error';$('cleanStatus').textContent=item.error;return;}
     if(item.loading)return;
-    $('sourceBtn').disabled=false;
     $('beforeImg').src=state.previewUrl;
     const error=(item.notes||[]).some(n=>n.level==='error');
     $('cleanBtn').disabled=error;
-    $('cleanStatus').textContent=error?'Исправьте ошибки и загрузите SVG повторно.':'Готово к очистке. Экспорт будет разрешён только после сравнения изображения.';
+    $('cleanStatus').textContent=error?'Исправьте ошибки и загрузите SVG повторно.':'Готово к очистке.';
   }
   async function addFiles(files) {
     const incoming=Array.from(files).filter(f=>f.name.toLowerCase().endsWith('.svg')||f.type==='image/svg+xml');
@@ -439,10 +438,186 @@
     'font-size','letter-spacing','word-spacing','rotate'
   ]);
 
+  const ZERO_POSITION_ELEMENTS=new Set(['svg','rect','use','pattern']);
+  function redundantPosition(el,attr) {
+    const inheritsPatternCoordinates=el.localName==='pattern' &&
+      (el.hasAttribute('href') || el.hasAttribute('xlink:href'));
+    return !inheritsPatternCoordinates && el.namespaceURI===SVG_NS && ZERO_POSITION_ELEMENTS.has(el.localName) &&
+      (attr.name==='x' || attr.name==='y') &&
+      /^[+-]?(?:0+(?:\.0*)?|\.0+)(?:e[+-]?\d+)?(?:%|px|em|ex|cm|mm|in|pt|pc)?$/i.test(attr.value.trim());
+  }
+  const INHERITED_PRESENTATION_DEFAULTS={
+    'fill-rule':'nonzero',
+    'clip-rule':'nonzero',
+    fill:'black',
+    stroke:'none',
+    'fill-opacity':'1',
+    'stroke-opacity':'1',
+    'stroke-linecap':'butt',
+    'stroke-linejoin':'miter',
+    'stroke-dasharray':'none',
+    visibility:'visible',
+    // The initial CSS color is UA-defined; only explicit ancestor colors can match.
+    color:null,
+    'font-style':'normal',
+    'font-weight':'400',
+    'text-anchor':'start',
+    direction:'ltr',
+    'paint-order':'normal',
+    'shape-rendering':'auto',
+    'text-rendering':'auto',
+    'image-rendering':'auto',
+    'color-interpolation':'srgb',
+    'color-interpolation-filters':'linearrgb'
+  };
+  const INHERITED_PRESENTATION_ENUMS={
+    'fill-rule':new Set(['nonzero','evenodd']),
+    'clip-rule':new Set(['nonzero','evenodd']),
+    'stroke-linecap':new Set(['butt','round','square']),
+    'stroke-linejoin':new Set(['miter','miter-clip','round','bevel','arcs']),
+    visibility:new Set(['visible','hidden','collapse']),
+    'font-style':new Set(['normal','italic','oblique']),
+    'text-anchor':new Set(['start','middle','end']),
+    direction:new Set(['ltr','rtl']),
+    'shape-rendering':new Set(['auto','optimizespeed','crispedges','geometricprecision']),
+    'text-rendering':new Set(['auto','optimizespeed','optimizelegibility','geometricprecision']),
+    'image-rendering':new Set(['auto','optimizespeed','optimizequality','smooth','high-quality','crisp-edges','pixelated']),
+    'color-interpolation':new Set(['auto','srgb','linearrgb']),
+    'color-interpolation-filters':new Set(['auto','srgb','linearrgb'])
+  };
+  const CSS_COLOR_KEYWORDS=new Set((
+    'aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgrey darkgreen darkkhaki darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray grey green greenyellow honeydew hotpink indianred indigo ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan lightgoldenrodyellow lightgray lightgrey lightgreen lightpink lightsalmon lightseagreen lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow yellowgreen transparent'
+  ).split(/\s+/));
+  function normalizedPresentationValue(attribute,rawValue) {
+    const value=rawValue.trim().toLowerCase();
+    if(!value || /^(?:inherit|initial|unset|revert|revert-layer)$/.test(value) ||
+      /\b(?:var|env|attr)\s*\(/.test(value))return null;
+    if(INHERITED_PRESENTATION_ENUMS[attribute]) {
+      return INHERITED_PRESENTATION_ENUMS[attribute].has(value)?value:null;
+    }
+    if(attribute==='font-weight') {
+      if(value==='normal')return '400';
+      if(value==='bold')return '700';
+      if(/^(?:[1-9]\d{0,2}|1000)$/.test(value))return String(Number(value));
+      return null;
+    }
+    if(attribute==='fill-opacity' || attribute==='stroke-opacity') {
+      const number=value.match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)(%)?$/i);
+      if(!number)return null;
+      const alpha=Number(number[1])*(number[2]?0.01:1);
+      if(!Number.isFinite(alpha))return null;
+      return String(Math.max(0,Math.min(1,alpha)));
+    }
+    if(attribute==='fill' || attribute==='stroke' || attribute==='color') {
+      if((attribute==='fill' || attribute==='stroke') && value==='none')return 'none';
+      if(CSS_COLOR_KEYWORDS.has(value) || /^#[\da-f]{3,4}(?:[\da-f]{3,4})?$/i.test(value) ||
+        /^(?:rgb|rgba|hsl|hsla|hwb)\([\d.%+\-/,\s]+\)$/i.test(value))return value;
+      return null;
+    }
+    if(attribute==='stroke-dasharray')return value==='none'?'none':null;
+    if(attribute==='paint-order') {
+      if(value==='normal')return value;
+      const parts=value.split(/\s+/);
+      return parts.length<=3 && parts.length>0 &&
+        new Set(parts).size===parts.length && parts.every(part=>['fill','stroke','markers'].includes(part))
+        ? parts.join(' '):null;
+    }
+    return null;
+  }
+  function normalizeInheritedPresentation(elements,referenced,report) {
+    const effective=new Map();
+    const styled=new Map();
+    const referencedSubtrees=new Map();
+    for(const el of elements) {
+      const parent=el.parentNode;
+      const inherited=effective.get(parent)||INHERITED_PRESENTATION_DEFAULTS;
+      const values={...inherited};
+      const hasInlineStyle=Boolean(styled.get(parent) || (el.nodeType===1 && el.hasAttribute('style')));
+      const id=el.nodeType===1 && el.hasAttribute('id')?el.getAttribute('id'):'';
+      const inReferencedSubtree=Boolean(referencedSubtrees.get(parent) || (id && referenced.has(id)));
+      if(hasInlineStyle || inReferencedSubtree) {
+        for(const attribute of Object.keys(values))values[attribute]=null;
+      } else if(el.namespaceURI===SVG_NS) {
+        for(const attribute of Object.keys(INHERITED_PRESENTATION_DEFAULTS)) {
+          if(!el.hasAttribute(attribute))continue;
+          const value=normalizedPresentationValue(attribute,el.getAttribute(attribute));
+          if(value===null) {
+            values[attribute]=null;
+            continue;
+          }
+          if(inherited[attribute]!==null && value===inherited[attribute]) {
+            el.removeAttribute(attribute);
+            if(attribute==='fill-rule' || attribute==='clip-rule')report.rules++;
+            else report.presentation++;
+          }
+          values[attribute]=value;
+        }
+      }
+      effective.set(el,values);
+      styled.set(el,hasInlineStyle);
+      referencedSubtrees.set(el,inReferencedSubtree);
+    }
+  }
+  const NONINHERITED_PRESENTATION_DEFAULTS={opacity:'1','vector-effect':'none'};
+  const STOP_PRESENTATION_DEFAULTS={'stop-color':'black','stop-opacity':'1'};
+  function removeDefaultNonInheritedPresentation(elements,report) {
+    for(const el of elements) {
+      if(el.namespaceURI!==SVG_NS || el.hasAttribute('style'))continue;
+      const defaults=el.localName==='stop'
+        ? {...NONINHERITED_PRESENTATION_DEFAULTS,...STOP_PRESENTATION_DEFAULTS}
+        : NONINHERITED_PRESENTATION_DEFAULTS;
+      for(const [attribute,value] of Object.entries(defaults)) {
+        if(el.hasAttribute(attribute) && el.getAttribute(attribute).trim().toLowerCase()===value) {
+          el.removeAttribute(attribute);report.presentation++;
+        }
+      }
+    }
+  }
+
+
+  function normalizeAttributes(doc) {
+    const elements=[doc.documentElement,...all(doc)];
+    const report={positions:0,links:0,namespaces:0,rules:0,presentation:0};
+    // Attribute selectors and namespace selectors can depend on the old syntax.
+    if(elements.some(el=>el.localName==='style'))return report;
+    normalizeInheritedPresentation(elements,referencedIds(doc),report);
+    removeDefaultNonInheritedPresentation(elements,report);
+    for(const el of elements) {
+      if(el.namespaceURI!==SVG_NS)continue;
+      for(const attr of Array.from(el.attributes)) {
+        if(redundantPosition(el,attr)) {
+          el.removeAttribute(attr.name);report.positions++;
+        } else if(attr.namespaceURI==='http://www.w3.org/1999/xlink' && attr.localName==='href') {
+          // SVG 2 href takes precedence when both forms are present.
+          if(!el.hasAttribute('href'))el.setAttribute('href',attr.value);
+          el.removeAttribute(attr.name);report.links++;
+        }
+      }
+    }
+    const usedPrefixes=new Set();
+    for(const el of elements) {
+      if(el.prefix)usedPrefixes.add(el.prefix);
+      for(const attr of Array.from(el.attributes)) {
+        const prefix=attr.name.split(':');
+        if(prefix.length===2 && prefix[0]!=='xmlns')usedPrefixes.add(prefix[0]);
+      }
+    }
+    for(const el of elements) {
+      for(const attr of Array.from(el.attributes)) {
+        if(attr.name.startsWith('xmlns:') && !usedPrefixes.has(attr.name.slice(6))) {
+          el.removeAttribute(attr.name);report.namespaces++;
+        }
+      }
+    }
+    return report;
+  }
+
   function coordinateInventory(doc) {
     const inventory=new Map();
+    const hasStyles=all(doc).some(el=>el.localName==='style');
     for(const el of [doc.documentElement,...all(doc)]) {
-      const coords=Array.from(el.attributes).filter(a=>COORDINATE_ATTRIBUTES.has(a.localName))
+      const coords=Array.from(el.attributes).filter(a=>COORDINATE_ATTRIBUTES.has(a.localName) &&
+        (hasStyles || !redundantPosition(el,a)))
         .map(a=>[a.name,a.value]).sort((a,b)=>a[0].localeCompare(b[0]));
       if(!coords.length)continue;
       const fingerprint=JSON.stringify([el.namespaceURI,el.localName,coords]);
@@ -562,11 +737,13 @@
     try{
       const cleaned=sanitize(item.doc);
       const clips=await removeRedundantClips(cleaned.doc);
+      const normalized=normalizeAttributes(cleaned.doc);
       const pruned=pruneDefinitions(cleaned.doc);
       const unusedIds=removeUnusedIds(cleaned.doc);
       const optimized=optimizeStructure(cleaned.doc);
       // Parse the actual exported text and verify that every retained numeric
-      // attribute, coordinate list and path command is byte-for-byte unchanged.
+      // attribute, coordinate list and path command is unchanged, except for
+      // omitted x/y positions whose default is exactly zero.
       const exportedSvg=serialize(cleaned.doc);
       const exportedDoc=parseSvg(exportedSvg);
       if(!coordinatesPreserved(item.safe,exportedDoc)) {
@@ -586,19 +763,13 @@
       $('downloadBtn').disabled=false;
       status.className='status '+(clips.retained?'warn':'ok');
       status.textContent=clips.retained
-        ? 'Сравнение пройдено. Экспорт доступен, но '+clips.retained+' clipPath остаются: удаление изменило бы рисунок.'
-        : 'Очистка завершена: изображение и все сохранившиеся координаты проверены. Точность не менялась.';
-      $('cleanMetrics').textContent='Исходный размер: '+formatBytes(bytes(item.raw))+
-        ' → очищенный: '+formatBytes(bytes(state.current.svg))+
-        '. Удалено безопасных clipPath: '+clips.removed+', неиспользуемых узлов defs: '+pruned+
-        '. Удалено неиспользуемых id: '+unusedIds.removed+', сохранено нужных id: '+unusedIds.retained+
-        '. Упрощено групп: '+optimized.flattened+', удалено пустых групп: '+optimized.emptyGroups+
-        ', пустых path: '+optimized.emptyPaths+', явно скрытых элементов: '+optimized.hidden+
-        ', пробельных узлов: '+optimized.whitespace+
-        ', пустых атрибутов: '+optimized.emptyAttributes+'.'+
-        (optimized.skippedCss?' Оптимизация структуры пропущена из-за CSS.':'')+
-        ' Удалено служебных/опасных узлов: '+cleaned.changes.nodes+
-        '. Проверка выполняется относительно безопасного предпросмотра, не исполняющего внешнее содержимое.';
+        ? 'Очищено. Сохранено clipPath: '+clips.retained+' — их удаление меняет рисунок.'
+        : 'Очищено. Изображение и координаты проверены.';
+      $('cleanMetrics').textContent=formatBytes(bytes(item.raw))+' → '+formatBytes(bytes(state.current.svg))+
+        '. Удалено узлов: '+(cleaned.changes.nodes+pruned+clips.removed+optimized.emptyGroups+optimized.emptyPaths+optimized.hidden)+
+        ', id: '+unusedIds.removed+', атрибутов: '+(cleaned.changes.attrs+optimized.emptyAttributes+normalized.positions+normalized.namespaces+normalized.rules+normalized.presentation)+
+        '. Упрощено групп: '+optimized.flattened+', заменено xlink:href: '+normalized.links+'.'+
+        (optimized.skippedCss?' Оптимизация атрибутов и структуры ограничена из-за CSS.':'');
     }catch(e){
       status.className='status error';status.textContent='Очистку не удалось проверить: '+e.message;
       $('downloadBtn').disabled=true;
@@ -631,9 +802,6 @@
   $('downloadBtn').addEventListener('click',()=>{
     const item=state.items[state.selected];
     if(item && state.current)download(item.name.replace(/\.svg$/i,'')+'.clean.svg',state.current.svg);
-  });
-  $('sourceBtn').addEventListener('click',()=>{
-    const item=state.items[state.selected];if(item && item.raw)download(item.name,item.raw);
   });
   window.addEventListener('beforeunload',()=>{
     freeUrl(state.previewUrl);freeUrl(state.cleanedUrl);
